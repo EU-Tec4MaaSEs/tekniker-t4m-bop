@@ -1,0 +1,57 @@
+name: Deploy BOP on Package Publish / Update
+
+env:
+  DEPLOYMENT_FILE: bill-of-processes-deployment
+  NAMESPACE: tec4maases
+  
+on:
+  registry_package:
+    types: [published, updated]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Only trigger for specific package and tag
+    if: |
+      github.event.registry_package.name == 'tekniker-t4m-bop' &&
+      contains(github.event.registry_package.package_version.container_metadata.tag.name, 'latest')
+    
+    steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: |
+          {
+            "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+            "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+            "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+            "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+          }
+    
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+    
+    - name: Install kubelogin
+      run: |
+        # Download and install kubelogin
+        az aks install-cli
+    
+    - name: Set AKS context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: ${{ secrets.AKS_RESOURCE_GROUP }}
+        cluster-name: ${{ secrets.AKS_CLUSTER_NAME }}
+    
+    - name: Convert kubeconfig to use service principal
+      run: |
+        kubelogin convert-kubeconfig -l spn
+    
+    - name: Rolling restart deployment
+      env:
+        AAD_SERVICE_PRINCIPAL_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AAD_SERVICE_PRINCIPAL_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      run: |
+        kubectl rollout restart deployment/${{ env.DEPLOYMENT_FILE }} -n ${{ env.NAMESPACE }}
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_FILE }} -n ${{ env.NAMESPACE }} --timeout=300s
